@@ -22,10 +22,12 @@ THEMES = {
 LEVEL_CHARS = [".'", ":;", "+", "=", "#"]   # Stufe 0 (kein Beitrag) bis 4 (viele), wie GitHubs Kacheln
 
 FS, LH, CW, PAD = 13, 16, 7.83, 28
-WIDTH = 1024   # Hoehe ergibt sich aus der Logo-Hoehe (2 Pixelzeilen je Textzeile)
+ASPECT = 2.0       # Format Breite : Hoehe; GitHub zeigt das Banner immer in voller Breite
+LOGO_SHARE = 0.8   # Anteil der Textzeilen, die das Logo hoch ist; der Rest ist Feld darueber und darunter
+CAP_FS = 13        # Beschriftung, bezogen auf 1024 px Breite: waechst mit der Breite, damit sie gleich gross erscheint
 GAP = 1.6     # freie Luft um die Logo-Silhouette
 HALO = 4      # bis zu diesem Abstand bleibt das Feld ruhig
-MIN_H, MAX_H, MAX_W = 27, 78, 100   # Logo-Masse in Pixeln: ab 27 hoch sind alle 7 Wochentage sichtbar
+MIN_H, MAX_H = 27, 78   # Logo-Hoehe in Pixeln (ab 27 sind alle 7 Wochentage sichtbar); Breite hoechstens doppelte Hoehe
 
 # --- Daten -------------------------------------------------------------------------
 def load_levels(user):
@@ -150,8 +152,8 @@ def load_logo():
     W, H = len(rows[0]), len(rows)
     if "#" not in LOGO or any(len(r) != W for r in rows):
         sys.exit("Logo-Raster in banner.py ist beschaedigt, Banner bleibt unveraendert")
-    if not (MIN_H <= H <= MAX_H and W <= MAX_W):
-        sys.exit(f"Logo {W}x{H} passt nicht ins Banner (max. {MAX_W} breit, {MIN_H}-{MAX_H} hoch), Banner bleibt unveraendert")
+    if not (MIN_H <= H <= MAX_H and W <= 2 * H):
+        sys.exit(f"Logo {W}x{H} passt nicht ins Banner ({MIN_H}-{MAX_H} hoch, hoechstens doppelt so breit wie hoch), Banner bleibt unveraendert")
     g = [[1 if ch == "#" else 0 for ch in r] for r in rows]
     return g, W, H
 
@@ -191,18 +193,28 @@ def logo_ascii(g, W, H):
 def build(levels, counts, today):
     g, W, H = load_logo()
     art = logo_ascii(g, W, H)
-    cols, rows = int((WIDTH - 2 * PAD) / CW), len(art)
+    if not (0.3 <= LOGO_SHARE <= 1 and 1 <= ASPECT <= 4):
+        sys.exit("LOGO_SHARE (0.3-1) oder ASPECT (1-4) ausserhalb des Bereichs, Banner bleibt unveraendert")
+    # Hoehe: Logo plus Feldzeilen darueber und darunter; Breite folgt aus dem Format
+    rows = math.ceil(len(art) / LOGO_SHARE)
+    top = (rows - len(art)) // 2
+    height = 2 * PAD + rows * LH
+    width = round(ASPECT * height)
+    cols = int((width - 2 * PAD) / CW)
     off = (cols - W) // 2
+    if W > cols - 2:
+        sys.exit("Logo ist zu breit fuer das Format, Banner bleibt unveraendert")
 
     def dist(cx, cy):
-        lx, best = cx - off, 99.0
-        for py in range(max(0, cy * 2 - 12), min(H, cy * 2 + 14)):
+        lx, ly, best = cx - off, cy - top, 99.0
+        for py in range(max(0, ly * 2 - 12), min(H, ly * 2 + 14)):
             for px in range(max(0, lx - 12), min(W, lx + 13)):
                 if g[py][px]:
-                    best = min(best, math.hypot(px - lx, py - (cy * 2 + 0.5)))
+                    best = min(best, math.hypot(px - lx, py - (ly * 2 + 0.5)))
         return best
 
-    start = today - datetime.timedelta(days=today.weekday() + 7 * (WEEKS - 1))
+    # Wochen beginnen sonntags, oberste Zeile = Sonntag, wie GitHubs Kalender unter dem Banner
+    start = today - datetime.timedelta(days=(today.weekday() + 1) % 7 + 7 * (WEEKS - 1))
     total = sum(counts.get((start + datetime.timedelta(days=i)).isoformat(), 0)
                 for i in range((today - start).days + 1))
     gaps = [d for d in (start + datetime.timedelta(days=i) for i in range((today - start).days + 1))
@@ -216,8 +228,9 @@ def build(levels, counts, today):
         line = []
         for cx in range(cols):
             lx = cx - off
-            if 0 <= lx < W and art[cy][lx] != " ":
-                line.append((art[cy][lx], "art")); continue
+            ly = cy - top
+            if 0 <= ly < len(art) and 0 <= lx < W and art[ly][lx] != " ":
+                line.append((art[ly][lx], "art")); continue
             d = dist(cx, cy)
             gutter = (cx * WEEKS) % cols < WEEKS or (cy * 7) % rows < 7
             day = start + datetime.timedelta(days=(cx * WEEKS // cols) * 7 + cy * 7 // rows)
@@ -229,24 +242,30 @@ def build(levels, counts, today):
             h = hsh(cx, cy, 7); h ^= h >> 16
             line.append((LEVEL_CHARS[lv][h % len(LEVEL_CHARS[lv])], f"f{lv}"))
         cells.append(line)
-    x = cols - len(caption) - 1
-    if any(cells[rows - 1][x + i][1] == "art" for i in range(-1, len(caption) + 1)):
+    # Beschriftung als eigener Text unten rechts, feste Breite wie die Rasterzeilen;
+    # die Feldzeichen darunter werden freigeraeumt (eine Zelle Luft ringsum)
+    x0 = (width - cols * CW) / 2
+    cap_fs = CAP_FS * width / 1024
+    cap_w = len(caption) * cap_fs * CW / FS
+    cap_x = x0 + (cols - 1) * CW - cap_w
+    cap_y = PAD + rows * LH - 4                    # gleiche Grundlinie wie die letzte Rasterzeile
+    c_from = max(0, int((cap_x - x0) / CW) - 1)
+    r_from = max(0, int((cap_y - 0.8 * cap_fs - PAD) / LH))
+    block = [(cy, cx) for cy in range(r_from, rows) for cx in range(c_from, cols)]
+    if any(cells[cy][cx][1] == "art" for cy, cx in block):
         sys.exit("Beschriftung wuerde das Logo ueberdecken, Banner bleibt unveraendert")
-    cells[rows - 1][x - 1] = (" ", None)           # Luft zwischen Feld und Beschriftung
-    cells[rows - 1][cols - 1] = (" ", None)        # und rechts davon
-    for i, ch in enumerate(caption):
-        cells[rows - 1][x + i] = (ch, "cap")
+    for cy, cx in block:
+        cells[cy][cx] = (" ", None)
 
     out = {}
     for name, c in THEMES.items():
-        height = 2 * PAD + rows * LH
-        svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="{FS}px">',
+        svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="{FS}px">',
                "<title>HI – Histudios</title>",
                "<style>" + "".join(f".{k}{{fill:{c[k]}}}" for k in ("art", "cap", "f0", "f1", "f2", "f3", "f4"))
                + "text,tspan{white-space:pre}</style>",
-               f'<rect width="{WIDTH}" height="{height}" rx="12" fill="{c["bg"]}" stroke="{c["frame"]}"/>',
+               # Ecke und Rahmen wachsen mit der Breite, damit sie in der Anzeige gleich bleiben
+               f'<rect width="{width}" height="{height}" rx="{12 * width / 1024:.1f}" fill="{c["bg"]}" stroke="{c["frame"]}" stroke-width="{width / 1024:.2f}"/>',
                '<text xml:space="preserve">']
-        x0 = (WIDTH - cols * CW) / 2
         for cy, line in enumerate(cells):
             spans, cur, buf = [], None, ""
             for ch, cls in line:
@@ -258,7 +277,9 @@ def build(levels, counts, today):
             inner = "".join(f'<tspan class="{k}">{html.escape(t)}</tspan>' for k, t in spans if t)
             # volle Zeilenlaenge + textLength: jede Monospace-Schrift fuellt exakt dieselbe Breite
             svg.append(f'<tspan x="{x0:.1f}" y="{PAD + (cy + 1) * LH - 4}" textLength="{cols * CW:.1f}" lengthAdjust="spacing">{inner}</tspan>')
-        svg.append("</text></svg>")
+        svg.append("</text>")
+        svg.append(f'<text class="cap" x="{cap_x:.1f}" y="{cap_y}" font-size="{cap_fs:.1f}px" textLength="{cap_w:.1f}" lengthAdjust="spacing">{html.escape(caption)}</text>')
+        svg.append("</svg>")
         out[name] = "\n".join(svg) + "\n"
     return out
 
