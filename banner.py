@@ -13,10 +13,12 @@ import datetime, html, http.client, math, pathlib, re, sys, time, urllib.request
 HERE = pathlib.Path(__file__).parent
 WEEKS = 12
 
+# bg = GitHubs Seitenfarbe im jeweiligen Theme: kein sichtbarer Rahmen, aber das Banner bleibt
+# lesbar, falls ein Besucher ein anderes GitHub-Theme nutzt als sein System
 THEMES = {
-    "dark":  dict(bg="#0f1218", frame="#232a36", art="#b4bbc7", cap="#8a93a3",
+    "dark":  dict(bg="#0d1117", art="#b4bbc7", cap="#8a93a3",
                   f0="#1b2028", f1="#262c36", f2="#343b47", f3="#434b59", f4="#5b6475"),
-    "light": dict(bg="#f6f7f9", frame="#dde1e8", art="#0f1218", cap="#5d6573",
+    "light": dict(bg="#ffffff", art="#0f1218", cap="#5d6573",
                   f0="#e2e5ea", f1="#d2d6dd", f2="#bfc4cd", f3="#aeb4be", f4="#8e95a1"),
 }
 LEVEL_CHARS = [".'", ":;", "+", "=", "#"]   # Stufe 0 (kein Beitrag) bis 4 (viele), wie GitHubs Kacheln
@@ -190,6 +192,24 @@ def logo_ascii(g, W, H):
     return art
 
 # --- Banner ------------------------------------------------------------------------
+def placed(line, xpos, y):
+    """Jedes Zeichen bekommt seine eigene x-Position (Liste im x-Attribut). So sitzt das Raster
+    in jedem Browser und mit jeder Monospace-Schrift gleich; eine Zeilenbreite per textLength
+    beachtet Safari bei verschachtelten tspans nicht. Leerzeichen werden nicht geschrieben."""
+    out, i = [], 0
+    while i < len(line):
+        ch, cls = line[i]
+        if ch == " ":
+            i += 1
+            continue
+        j = i
+        while j < len(line) and line[j][0] != " " and line[j][1] == cls:
+            j += 1
+        xs = " ".join(f"{xpos(k):.1f}" for k in range(i, j))
+        out.append(f'<tspan class="{cls}" x="{xs}" y="{y}">{html.escape("".join(c for c, _ in line[i:j]))}</tspan>')
+        i = j
+    return out
+
 def build(levels, counts, today):
     g, W, H = load_logo()
     art = logo_ascii(g, W, H)
@@ -242,11 +262,12 @@ def build(levels, counts, today):
             h = hsh(cx, cy, 7); h ^= h >> 16
             line.append((LEVEL_CHARS[lv][h % len(LEVEL_CHARS[lv])], f"f{lv}"))
         cells.append(line)
-    # Beschriftung als eigener Text unten rechts, feste Breite wie die Rasterzeilen;
+    # Beschriftung als eigener Text unten rechts, Zeichen auf festen Positionen wie das Raster;
     # die Feldzeichen darunter werden freigeraeumt (eine Zelle Luft ringsum)
     x0 = (width - cols * CW) / 2
     cap_fs = CAP_FS * width / 1024
-    cap_w = len(caption) * cap_fs * CW / FS
+    cap_cw = cap_fs * CW / FS
+    cap_w = len(caption) * cap_cw
     cap_x = x0 + (cols - 1) * CW - cap_w
     cap_y = PAD + rows * LH - 4                    # gleiche Grundlinie wie die letzte Rasterzeile
     c_from = max(0, int((cap_x - x0) / CW) - 1)
@@ -261,24 +282,16 @@ def build(levels, counts, today):
     for name, c in THEMES.items():
         svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="{FS}px">',
                "<title>HI – Histudios</title>",
-               "<style>" + "".join(f".{k}{{fill:{c[k]}}}" for k in ("art", "cap", "f0", "f1", "f2", "f3", "f4"))
-               + "text,tspan{white-space:pre}</style>",
-               # Ecke und Rahmen wachsen mit der Breite, damit sie in der Anzeige gleich bleiben
-               f'<rect width="{width}" height="{height}" rx="{12 * width / 1024:.1f}" fill="{c["bg"]}" stroke="{c["frame"]}" stroke-width="{width / 1024:.2f}"/>',
-               '<text xml:space="preserve">']
+               "<style>" + "".join(f".{k}{{fill:{c[k]}}}" for k in ("art", "cap", "f0", "f1", "f2", "f3", "f4")) + "</style>",
+               # Flaeche in GitHubs Seitenfarbe, ohne Rahmenlinie; die Ecke waechst mit der Breite
+               f'<rect width="{width}" height="{height}" rx="{12 * width / 1024:.1f}" fill="{c["bg"]}"/>',
+               "<text>"]
         for cy, line in enumerate(cells):
-            spans, cur, buf = [], None, ""
-            for ch, cls in line:
-                cls = cls or cur or "art"
-                if cls != cur and buf:
-                    spans.append((cur, buf)); buf = ""
-                cur = cls; buf += ch
-            spans.append((cur, buf))
-            inner = "".join(f'<tspan class="{k}">{html.escape(t)}</tspan>' for k, t in spans if t)
-            # volle Zeilenlaenge + textLength: jede Monospace-Schrift fuellt exakt dieselbe Breite
-            svg.append(f'<tspan x="{x0:.1f}" y="{PAD + (cy + 1) * LH - 4}" textLength="{cols * CW:.1f}" lengthAdjust="spacing">{inner}</tspan>')
+            svg += placed(line, lambda i: x0 + i * CW, PAD + (cy + 1) * LH - 4)
         svg.append("</text>")
-        svg.append(f'<text class="cap" x="{cap_x:.1f}" y="{cap_y}" font-size="{cap_fs:.1f}px" textLength="{cap_w:.1f}" lengthAdjust="spacing">{html.escape(caption)}</text>')
+        svg.append(f'<text font-size="{cap_fs:.1f}px">')
+        svg += placed([(ch, "cap") for ch in caption], lambda i: cap_x + i * cap_cw, cap_y)
+        svg.append("</text>")
         svg.append("</svg>")
         out[name] = "\n".join(svg) + "\n"
     return out
